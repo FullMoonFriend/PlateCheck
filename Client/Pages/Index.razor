@@ -1,11 +1,15 @@
 @page "/"
 @using System.Net.Http.Json
+@using System.Text.Json
+@using Client.Models
+@using Client.Services
 @inject HttpClient Http
+@inject LocalStorageService Storage
 
-<PageTitle>License Plate Lookup</PageTitle>
+<PageTitle>PlateCheck</PageTitle>
 
 <div class="lookup-container">
-    <h1>License Plate Lookup</h1>
+    <h1>PlateCheck</h1>
     <p class="subtitle">Take a photo of a license plate, or enter a VIN directly to look up vehicle details.</p>
 
     <div class="input-card">
@@ -60,7 +64,15 @@
             <h2>Vehicle Information</h2>
             @if (result.DataSource == "photo")
             {
-                <p class="result-source">Identified from photo via Plate Recognizer</p>
+                <p class="result-source">Identified from photo</p>
+            }
+            else if (result.DataSource == "vin")
+            {
+                <p class="result-source">Decoded from VIN</p>
+            }
+            else if (result.DataSource == "both")
+            {
+                <p class="result-source">Photo + VIN decode</p>
             }
             <div class="result-grid">
                 <ResultRow Label="Plate"        Value="@FormatPlate(result)" />
@@ -76,17 +88,80 @@
                 <ResultRow Label="Transmission" Value="@result.Transmission" />
                 <ResultRow Label="Drive Type"   Value="@result.DriveType" />
             </div>
+
+            @if (result.DataSource == "photo" && string.IsNullOrEmpty(result.Vin))
+            {
+                <div class="enrich-section">
+                    <p class="enrich-prompt">Enter the VIN from the door jamb or windshield for full vehicle details.</p>
+                    <div class="input-row">
+                        <div class="field">
+                            <input type="text" @bind="enrichVin" @bind:event="oninput"
+                                   placeholder="e.g. 1HGCM82633A004352" maxlength="17" />
+                        </div>
+                    </div>
+                    <button class="lookup-btn enrich-btn" @onclick="EnrichWithVin"
+                            disabled="@(isEnriching || string.IsNullOrWhiteSpace(enrichVin))">
+                        @if (isEnriching)
+                        {
+                            <span>Enriching...</span>
+                        }
+                        else
+                        {
+                            <span>Add VIN Details</span>
+                        }
+                    </button>
+                </div>
+            }
+        </div>
+    }
+
+    @if (history.Count > 0)
+    {
+        <div class="history-section">
+            <div class="history-header">
+                <h2>Recent Lookups</h2>
+                <button class="clear-btn" @onclick="ClearHistory">Clear History</button>
+            </div>
+            <div class="history-list">
+                @foreach (var entry in history)
+                {
+                    <div class="history-item" @onclick="() => RestoreFromHistory(entry)">
+                        <div class="history-item-main">
+                            <span class="history-title">@entry.DisplayTitle</span>
+                            <span class="history-time">@entry.RelativeTime</span>
+                        </div>
+                        <span class="history-subtitle">@entry.DisplaySubtitle</span>
+                    </div>
+                }
+            </div>
         </div>
     }
 </div>
 
 @code {
+    private const string HistoryKey = "platecheck_history";
+    private const int MaxHistory = 25;
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private string vinNumber = string.Empty;
+    private string enrichVin = string.Empty;
     private bool isLoading;
     private bool isOcrLoading;
+    private bool isEnriching;
     private string? errorMessage;
     private string? ocrStatus;
     private VehicleResult? result;
+    private string? currentHistoryId;
+    private List<HistoryEntry> history = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadHistory();
+    }
 
     private async Task HandlePhotoSelected(InputFileChangeEventArgs e)
     {
@@ -94,6 +169,8 @@
         ocrStatus = null;
         errorMessage = null;
         result = null;
+        enrichVin = string.Empty;
+        currentHistoryId = null;
         StateHasChanged();
 
         try
@@ -121,15 +198,17 @@
                 return;
             }
 
-            // If we got make/model from the photo, show results immediately
             if (!string.IsNullOrEmpty(ocrResult.Make) || !string.IsNullOrEmpty(ocrResult.Model))
             {
                 result = ocrResult;
                 ocrStatus = $"Plate detected: {ocrResult.PlateNumber}";
+                await SaveToHistory(result);
             }
             else
             {
-                ocrStatus = $"Plate detected: {ocrResult.PlateNumber}, but vehicle details unavailable. Enter a VIN for full details.";
+                result = ocrResult;
+                ocrStatus = $"Plate detected: {ocrResult.PlateNumber}. Add a VIN below for full details.";
+                await SaveToHistory(result);
             }
         }
         catch (Exception ex)
@@ -148,6 +227,7 @@
         isLoading = true;
         errorMessage = null;
         result = null;
+        currentHistoryId = null;
         StateHasChanged();
 
         try
@@ -165,6 +245,7 @@
             if (result != null)
             {
                 result.DataSource = "vin";
+                await SaveToHistory(result);
             }
         }
         catch (Exception ex)
@@ -176,6 +257,142 @@
         {
             isLoading = false;
         }
+    }
+
+    private async Task EnrichWithVin()
+    {
+        if (result == null) return;
+
+        isEnriching = true;
+        errorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            var resp = await Http.GetAsync(
+                $"api/decode-vin?vin={Uri.EscapeDataString(enrichVin)}");
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                errorMessage = "VIN decode failed. Please check the VIN and try again.";
+                return;
+            }
+
+            var vinResult = await resp.Content.ReadFromJsonAsync<VehicleResult>();
+            if (vinResult == null) return;
+
+            // Merge: OCR wins for plate/state/color, NHTSA wins for everything else
+            result.Vin = vinResult.Vin;
+            result.Year = vinResult.Year ?? result.Year;
+            result.Make = vinResult.Make ?? result.Make;
+            result.Model = vinResult.Model ?? result.Model;
+            result.Trim = vinResult.Trim;
+            result.BodyStyle = vinResult.BodyStyle ?? result.BodyStyle;
+            result.FuelType = vinResult.FuelType;
+            result.EngineDisplacement = vinResult.EngineDisplacement;
+            result.Cylinders = vinResult.Cylinders;
+            result.Transmission = vinResult.Transmission;
+            result.DriveType = vinResult.DriveType;
+            result.DataSource = "both";
+
+            await SaveToHistory(result);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = "An unexpected error occurred. Please try again.";
+            Console.Error.WriteLine(ex);
+        }
+        finally
+        {
+            isEnriching = false;
+        }
+    }
+
+    private async Task SaveToHistory(VehicleResult r)
+    {
+        var entry = new HistoryEntry
+        {
+            Id = currentHistoryId ?? Guid.NewGuid().ToString(),
+            PlateNumber = r.PlateNumber,
+            State = r.State,
+            Vin = r.Vin,
+            Make = r.Make,
+            Model = r.Model,
+            Year = r.Year,
+            YearRange = r.YearRange,
+            Color = r.Color,
+            Trim = r.Trim,
+            BodyStyle = r.BodyStyle,
+            VehicleType = r.VehicleType,
+            FuelType = r.FuelType,
+            EngineDisplacement = r.EngineDisplacement,
+            Cylinders = r.Cylinders,
+            Transmission = r.Transmission,
+            DriveType = r.DriveType,
+            DataSource = r.DataSource,
+            Timestamp = DateTime.UtcNow
+        };
+
+        currentHistoryId = entry.Id;
+
+        // Update in place if exists, otherwise insert at front
+        var existing = history.FindIndex(h => h.Id == entry.Id);
+        if (existing >= 0)
+        {
+            history[existing] = entry;
+        }
+        else
+        {
+            history.Insert(0, entry);
+            if (history.Count > MaxHistory)
+                history.RemoveAt(history.Count - 1);
+        }
+
+        var json = JsonSerializer.Serialize(history, JsonOptions);
+        await Storage.SetAsync(HistoryKey, json);
+    }
+
+    private async Task LoadHistory()
+    {
+        var json = await Storage.GetAsync(HistoryKey);
+        if (!string.IsNullOrEmpty(json))
+        {
+            history = JsonSerializer.Deserialize<List<HistoryEntry>>(json, JsonOptions) ?? new();
+        }
+    }
+
+    private async Task ClearHistory()
+    {
+        history.Clear();
+        await Storage.RemoveAsync(HistoryKey);
+    }
+
+    private void RestoreFromHistory(HistoryEntry entry)
+    {
+        currentHistoryId = entry.Id;
+        result = new VehicleResult
+        {
+            PlateNumber = entry.PlateNumber,
+            State = entry.State,
+            Vin = entry.Vin,
+            Make = entry.Make,
+            Model = entry.Model,
+            Year = entry.Year,
+            YearRange = entry.YearRange,
+            Color = entry.Color,
+            Trim = entry.Trim,
+            BodyStyle = entry.BodyStyle,
+            VehicleType = entry.VehicleType,
+            FuelType = entry.FuelType,
+            EngineDisplacement = entry.EngineDisplacement,
+            Cylinders = entry.Cylinders,
+            Transmission = entry.Transmission,
+            DriveType = entry.DriveType,
+            DataSource = entry.DataSource,
+            Success = true
+        };
+        errorMessage = null;
+        ocrStatus = null;
     }
 
     private static string? FormatPlate(VehicleResult r)
