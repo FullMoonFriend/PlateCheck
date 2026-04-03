@@ -10,7 +10,7 @@
 
 <div class="lookup-container">
     <h1>PlateCheck</h1>
-    <p class="subtitle">Take a photo, enter a license plate, or look up a VIN to get vehicle details.</p>
+    <p class="subtitle">Take a photo of a license plate, or enter a VIN directly to look up vehicle details.</p>
 
     <div class="input-card">
 
@@ -29,38 +29,6 @@
             }
         </div>
 
-        <div class="divider"><span>or enter plate info</span></div>
-
-        <div class="input-row">
-            <div class="field">
-                <label for="plate">License Plate</label>
-                <input id="plate" type="text" @bind="plateNumber" @bind:event="oninput"
-                       placeholder="e.g. ABC1234" maxlength="10" />
-            </div>
-            <div class="field field-state">
-                <label for="state">State</label>
-                <select id="state" @bind="selectedState">
-                    <option value="">-- Select --</option>
-                    @foreach (var s in States)
-                    {
-                        <option value="@s.Code">@s.Name</option>
-                    }
-                </select>
-            </div>
-        </div>
-
-        <button class="lookup-btn" @onclick="LookupPlate"
-                disabled="@(isLoading || isOcrLoading || string.IsNullOrWhiteSpace(plateNumber) || string.IsNullOrWhiteSpace(selectedState))">
-            @if (isLoading && lookupMode == "plate")
-            {
-                <span>Looking up...</span>
-            }
-            else
-            {
-                <span>Look Up Plate</span>
-            }
-        </button>
-
         <div class="divider"><span>or enter a VIN</span></div>
 
         <div class="input-row">
@@ -73,7 +41,7 @@
 
         <button class="lookup-btn" @onclick="DecodeVin"
                 disabled="@(isLoading || isOcrLoading || string.IsNullOrWhiteSpace(vinNumber))">
-            @if (isLoading && lookupMode == "vin")
+            @if (isLoading)
             {
                 <span>Looking up...</span>
             }
@@ -97,10 +65,6 @@
             @if (result.DataSource == "photo")
             {
                 <p class="result-source">Identified from photo</p>
-            }
-            else if (result.DataSource == "plate")
-            {
-                <p class="result-source">Looked up from license plate</p>
             }
             else if (result.DataSource == "vin")
             {
@@ -183,11 +147,8 @@
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    private string plateNumber = string.Empty;
-    private string selectedState = string.Empty;
     private string vinNumber = string.Empty;
     private string enrichVin = string.Empty;
-    private string lookupMode = string.Empty;
     private bool isLoading;
     private bool isOcrLoading;
     private bool isEnriching;
@@ -237,10 +198,6 @@
                 return;
             }
 
-            // Populate plate/state fields from OCR
-            plateNumber = ocrResult.PlateNumber;
-            selectedState = ocrResult.State;
-
             if (!string.IsNullOrEmpty(ocrResult.Make) || !string.IsNullOrEmpty(ocrResult.Model))
             {
                 result = ocrResult;
@@ -265,53 +222,9 @@
         }
     }
 
-    private async Task LookupPlate()
-    {
-        isLoading = true;
-        lookupMode = "plate";
-        errorMessage = null;
-        result = null;
-        currentHistoryId = null;
-        StateHasChanged();
-
-        try
-        {
-            var resp = await Http.GetAsync(
-                $"api/lookup-plate?plate={Uri.EscapeDataString(plateNumber)}&state={Uri.EscapeDataString(selectedState)}");
-
-            if (!resp.IsSuccessStatusCode)
-            {
-                errorMessage = "Plate lookup failed. Please check the plate and state.";
-                return;
-            }
-
-            result = await resp.Content.ReadFromJsonAsync<VehicleResult>();
-            if (result != null && result.Success)
-            {
-                result.DataSource = "plate";
-                await SaveToHistory(result);
-            }
-            else
-            {
-                errorMessage = result?.ErrorMessage ?? "No vehicle found for this plate/state combination.";
-                result = null;
-            }
-        }
-        catch (Exception ex)
-        {
-            errorMessage = "An unexpected error occurred. Please try again.";
-            Console.Error.WriteLine(ex);
-        }
-        finally
-        {
-            isLoading = false;
-        }
-    }
-
     private async Task DecodeVin()
     {
         isLoading = true;
-        lookupMode = "vin";
         errorMessage = null;
         result = null;
         currentHistoryId = null;
@@ -497,22 +410,4 @@
         return string.Join(" ", parts);
     }
 
-    private record StateInfo(string Code, string Name);
-
-    private static readonly StateInfo[] States = new StateInfo[]
-    {
-        new("AL","Alabama"), new("AK","Alaska"), new("AZ","Arizona"), new("AR","Arkansas"),
-        new("CA","California"), new("CO","Colorado"), new("CT","Connecticut"), new("DE","Delaware"),
-        new("FL","Florida"), new("GA","Georgia"), new("HI","Hawaii"), new("ID","Idaho"),
-        new("IL","Illinois"), new("IN","Indiana"), new("IA","Iowa"), new("KS","Kansas"),
-        new("KY","Kentucky"), new("LA","Louisiana"), new("ME","Maine"), new("MD","Maryland"),
-        new("MA","Massachusetts"), new("MI","Michigan"), new("MN","Minnesota"), new("MS","Mississippi"),
-        new("MO","Missouri"), new("MT","Montana"), new("NE","Nebraska"), new("NV","Nevada"),
-        new("NH","New Hampshire"), new("NJ","New Jersey"), new("NM","New Mexico"), new("NY","New York"),
-        new("NC","North Carolina"), new("ND","North Dakota"), new("OH","Ohio"), new("OK","Oklahoma"),
-        new("OR","Oregon"), new("PA","Pennsylvania"), new("RI","Rhode Island"), new("SC","South Carolina"),
-        new("SD","South Dakota"), new("TN","Tennessee"), new("TX","Texas"), new("UT","Utah"),
-        new("VT","Vermont"), new("VA","Virginia"), new("WA","Washington"), new("WV","West Virginia"),
-        new("WI","Wisconsin"), new("WY","Wyoming"), new("DC","District of Columbia")
-    };
 }
