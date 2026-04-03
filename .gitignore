@@ -8,8 +8,7 @@ obj/
 ## Secrets — never commit these
 Api/local.settings.json
 
-## Blazor WASM publish output
-Client/wwwroot/css/bootstrap/
+## Blazor WASM publish output (keep bootstrap — needed at build time)
 
 ## macOS
 .DS_Store
