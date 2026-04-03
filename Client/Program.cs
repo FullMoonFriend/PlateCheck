@@ -10,5 +10,6 @@ var apiBase = builder.Configuration["ApiBaseUrl"]
               ?? builder.HostEnvironment.BaseAddress;
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(apiBase) });
+builder.Services.AddScoped<Client.Services.LocalStorageService>();
 
 await builder.Build().RunAsync();
