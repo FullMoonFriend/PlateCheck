@@ -1,0 +1,12 @@
+@if (!string.IsNullOrWhiteSpace(Value))
+{
+    <div class="result-row">
+        <span class="result-label">@Label</span>
+        <span class="result-value">@Value</span>
+    </div>
+}
+
+@code {
+    [Parameter] public string Label { get; set; } = string.Empty;
+    [Parameter] public string? Value { get; set; }
+}

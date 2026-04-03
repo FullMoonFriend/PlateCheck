@@ -1,0 +1,22 @@
+## .NET
+bin/
+obj/
+*.user
+.vs/
+.vscode/
+
+## Secrets — never commit these
+Api/local.settings.json
+
+## Blazor WASM publish output
+Client/wwwroot/css/bootstrap/
+
+## macOS
+.DS_Store
+
+## IDE
+*.suo
+*.sln.docstates
+
+## Docs build artifacts
+docs/superpowers/

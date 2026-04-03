@@ -1,0 +1,195 @@
+@page "/"
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>License Plate Lookup</PageTitle>
+
+<div class="lookup-container">
+    <h1>License Plate Lookup</h1>
+    <p class="subtitle">Take a photo of a license plate, or enter a VIN directly to look up vehicle details.</p>
+
+    <div class="input-card">
+
+        <div class="photo-row">
+            <label class="photo-label">
+                <span>📷 Take or Upload Photo</span>
+                <InputFile OnChange="HandlePhotoSelected" accept="image/*" capture="environment" />
+            </label>
+            @if (isOcrLoading)
+            {
+                <span class="ocr-status">Analyzing photo...</span>
+            }
+            else if (!string.IsNullOrEmpty(ocrStatus))
+            {
+                <span class="ocr-status">@ocrStatus</span>
+            }
+        </div>
+
+        <div class="divider"><span>or enter a VIN</span></div>
+
+        <div class="input-row">
+            <div class="field">
+                <label for="vin">VIN (Vehicle Identification Number)</label>
+                <input id="vin" type="text" @bind="vinNumber" @bind:event="oninput"
+                       placeholder="e.g. 1HGCM82633A004352" maxlength="17" />
+            </div>
+        </div>
+
+        <button class="lookup-btn" @onclick="DecodeVin"
+                disabled="@(isLoading || isOcrLoading || string.IsNullOrWhiteSpace(vinNumber))">
+            @if (isLoading)
+            {
+                <span>Looking up...</span>
+            }
+            else
+            {
+                <span>Decode VIN</span>
+            }
+        </button>
+
+    </div>
+
+    @if (errorMessage != null)
+    {
+        <div class="error-card">@errorMessage</div>
+    }
+
+    @if (result != null && result.Success)
+    {
+        <div class="result-card">
+            <h2>Vehicle Information</h2>
+            @if (result.DataSource == "photo")
+            {
+                <p class="result-source">Identified from photo via Plate Recognizer</p>
+            }
+            <div class="result-grid">
+                <ResultRow Label="Plate"        Value="@FormatPlate(result)" />
+                <ResultRow Label="Year"         Value="@(result.Year ?? result.YearRange)" />
+                <ResultRow Label="Make"         Value="@result.Make" />
+                <ResultRow Label="Model"        Value="@result.Model" />
+                <ResultRow Label="Trim"         Value="@result.Trim" />
+                <ResultRow Label="Color"        Value="@result.Color" />
+                <ResultRow Label="Body Style"   Value="@(result.BodyStyle ?? result.VehicleType)" />
+                <ResultRow Label="VIN"          Value="@result.Vin" />
+                <ResultRow Label="Fuel Type"    Value="@result.FuelType" />
+                <ResultRow Label="Engine"       Value="@FormatEngine(result)" />
+                <ResultRow Label="Transmission" Value="@result.Transmission" />
+                <ResultRow Label="Drive Type"   Value="@result.DriveType" />
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private string vinNumber = string.Empty;
+    private bool isLoading;
+    private bool isOcrLoading;
+    private string? errorMessage;
+    private string? ocrStatus;
+    private VehicleResult? result;
+
+    private async Task HandlePhotoSelected(InputFileChangeEventArgs e)
+    {
+        isOcrLoading = true;
+        ocrStatus = null;
+        errorMessage = null;
+        result = null;
+        StateHasChanged();
+
+        try
+        {
+            var file = e.File;
+
+            var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using var imageContent = new StreamContent(stream);
+            imageContent.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
+
+            var response = await Http.PostAsync("api/ocr-plate", imageContent);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                ocrStatus = "Could not read plate from photo.";
+                return;
+            }
+
+            var ocrResult = await response.Content.ReadFromJsonAsync<VehicleResult>();
+
+            if (ocrResult == null || !ocrResult.Success)
+            {
+                ocrStatus = ocrResult?.ErrorMessage ?? "No plate detected. Please enter a VIN instead.";
+                return;
+            }
+
+            // If we got make/model from the photo, show results immediately
+            if (!string.IsNullOrEmpty(ocrResult.Make) || !string.IsNullOrEmpty(ocrResult.Model))
+            {
+                result = ocrResult;
+                ocrStatus = $"Plate detected: {ocrResult.PlateNumber}";
+            }
+            else
+            {
+                ocrStatus = $"Plate detected: {ocrResult.PlateNumber}, but vehicle details unavailable. Enter a VIN for full details.";
+            }
+        }
+        catch (Exception ex)
+        {
+            ocrStatus = "Photo error — please enter a VIN instead.";
+            Console.Error.WriteLine(ex);
+        }
+        finally
+        {
+            isOcrLoading = false;
+        }
+    }
+
+    private async Task DecodeVin()
+    {
+        isLoading = true;
+        errorMessage = null;
+        result = null;
+        StateHasChanged();
+
+        try
+        {
+            var resp = await Http.GetAsync(
+                $"api/decode-vin?vin={Uri.EscapeDataString(vinNumber)}");
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                errorMessage = "VIN decode failed. Please check the VIN and try again.";
+                return;
+            }
+
+            result = await resp.Content.ReadFromJsonAsync<VehicleResult>();
+            if (result != null)
+            {
+                result.DataSource = "vin";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = "An unexpected error occurred. Please try again.";
+            Console.Error.WriteLine(ex);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static string? FormatPlate(VehicleResult r)
+    {
+        if (string.IsNullOrEmpty(r.PlateNumber)) return null;
+        return string.IsNullOrEmpty(r.State) ? r.PlateNumber : $"{r.PlateNumber} ({r.State})";
+    }
+
+    private static string? FormatEngine(VehicleResult r)
+    {
+        if (r.EngineDisplacement == null && r.Cylinders == null) return null;
+        var parts = new List<string>();
+        if (r.EngineDisplacement != null) parts.Add($"{r.EngineDisplacement}L");
+        if (r.Cylinders != null) parts.Add($"{r.Cylinders}-cyl");
+        return string.Join(" ", parts);
+    }
+}
